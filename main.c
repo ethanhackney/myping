@@ -18,6 +18,8 @@ enum {
 
 /* sends an ICMP packet every one second */
 static void sig_alrm(int signo);
+/* calculate checksum */
+static uint16_t icmp_cksum(uint16_t *pkt, int len);
 
 /* address we are sending to */
 static struct sockaddr  *g_sendaddr;
@@ -135,12 +137,8 @@ static void
 sig_alrm(int signo)
 {
         struct icmp     *icmp;
-        uint32_t        cksum;
-        uint16_t        *ckptr;
-        uint16_t        answer;
         char            sendbuf[BUFSIZE];
         int             len;
-        int             nleft;
 
         /* setup ICMP header */
         icmp = (struct icmp *)sendbuf;
@@ -154,22 +152,8 @@ sig_alrm(int signo)
 
         /* compute checksum */
         len = 8 + 56;
-        nleft = len;
-        cksum = 0;
-        answer = 0;
-        ckptr = (uint16_t *)icmp;
-        while (nleft > 1) {
-                cksum += *ckptr++;
-                nleft -= 2;
-        }
-        if (nleft == 1) {
-                *(unsigned char *)(&answer) = *(unsigned char *)ckptr;
-                cksum += answer;
-        }
-        cksum = (cksum >> 16) + (cksum & 0xffff);
-        cksum += (cksum >> 16);
-        answer = ~cksum;
-        icmp->icmp_cksum = answer;
+        icmp->icmp_cksum = 0;
+        icmp->icmp_cksum = icmp_cksum((uint16_t *)icmp, len);
 
         /* send it */
         if (sendto(g_sockfd, sendbuf, len, 0, g_sendaddr, g_salen) < 0)
@@ -177,4 +161,29 @@ sig_alrm(int signo)
 
         /* setup another alarm one second from now */
         alarm(1);
+}
+
+/* calculate checksum */
+static uint16_t
+icmp_cksum(uint16_t *pkt, int len)
+{
+        uint32_t        sum = 0;
+        uint16_t        *w = pkt;
+        uint16_t        answer = 0;
+        int             nleft = len;
+
+        while (nleft > 1) {
+                sum += *w++;
+                nleft -= 2;
+        }
+
+        if (nleft == 1) {
+                *(unsigned char *)(&answer) = *(unsigned char *)w;
+                sum += answer;
+        }
+
+        sum = (sum >> 16) + (sum & 0xffff);
+        sum += (sum >> 16);
+        answer = ~sum;
+        return answer;
 }
