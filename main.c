@@ -16,13 +16,20 @@ enum {
         BUFSIZE = 1500,
 };
 
+/* sends an ICMP packet every one second */
 static void sig_alrm(int signo);
 
+/* address we are sending to */
 static struct sockaddr  *g_sendaddr;
+/* length of address */
 static socklen_t        g_salen;
+/* our PID */
 static pid_t            g_pid;
+/* hostname of who we are sending to */
 static char             *g_host;
+/* number of packets sent so far */
 static int              g_nr_sent;
+/* raw socket descriptor */
 static int              g_sockfd;
 
 int
@@ -42,12 +49,15 @@ main(int argc, char **argv)
         int                     hlen;
         int                     error;
 
+        /* get host argument */
         if (argc != 2)
                 errx(EX_USAGE, "ping host");
         g_host = argv[1];
 
+        /* save our pid for ICMP id field */
         g_pid = getpid() & 0xffff;
 
+        /* setup SIGALRM handler */
         memset(&act, 0, sizeof(act));
         act.sa_flags = 0;
         act.sa_handler = sig_alrm;
@@ -55,20 +65,22 @@ main(int argc, char **argv)
         if (sigaction(SIGALRM, &act, NULL) < 0)
                 err(EX_OSERR, "sigaction()");
 
+        /* get addrinfo for host */
         memset(&hints, 0, sizeof(hints));
         hints.ai_flags = AI_CANONNAME;
         hints.ai_family = AF_INET;
         error = getaddrinfo(g_host, NULL, &hints, &ai);
         if (error != 0)
                 errx(EX_SOFTWARE, "getaddrinfo(): %s", gai_strerror(error));
-
         g_sendaddr = ai->ai_addr;
         g_salen = ai->ai_addrlen;
 
+        /* open up raw socket */
         g_sockfd = socket(ai->ai_family, SOCK_RAW, IPPROTO_ICMP);
         if (g_sockfd < 0)
                 err(EX_OSERR, "socket()");
 
+        /* send first packet */
         sig_alrm(SIGALRM);
 
         iov.iov_base = recvbuf;
@@ -81,28 +93,36 @@ main(int argc, char **argv)
                 msg.msg_namelen = g_salen;
                 msg.msg_controllen = sizeof(ctlbuf);
                 n = recvmsg(g_sockfd, &msg, 0);
+
+                /* did we get interrupted by SIGALRM? */
                 if (n < 0 && errno == EINTR)
                         continue;
                 if (n < 0)
                         err(EX_OSERR, "recvmsg()");
 
+                /* make sure we have an ICMP packet */
                 ip = (struct ip *)recvbuf;
                 hlen = ip->ip_hl << 2;
                 if (ip->ip_p != IPPROTO_ICMP)
                         continue;
 
+                /* make sure it is not malformed */
                 icmp = (struct icmp *)(recvbuf + hlen);
                 icmplen = n - hlen;
                 if (icmplen < 8)
                         continue;
 
+                /* make sure its an ECHOREPLY */
                 if (icmp->icmp_type != ICMP_ECHOREPLY)
                         continue;
+                /* make sure its for us */
                 if (icmp->icmp_id != g_pid)
                         continue;
+                /* make sure its the right size */
                 if (icmplen < 16)
                         continue;
 
+                /* print results of ping */
                 printf("%d bytes from %s: seq=%u, ttl=%d\n",
                        icmplen,
                        g_host,
@@ -122,18 +142,18 @@ sig_alrm(int signo)
         int             len;
         int             nleft;
 
+        /* setup ICMP header */
         icmp = (struct icmp *)sendbuf;
         icmp->icmp_type = ICMP_ECHO;
         icmp->icmp_code = 0;
         icmp->icmp_id = g_pid;
         icmp->icmp_seq = g_nr_sent++;
         memset(icmp->icmp_data, 0xa5, 56);
-
         if (gettimeofday((struct timeval *)icmp->icmp_data, NULL) < 0)
                 err(EX_OSERR, "gettimeofday()");
 
+        /* compute checksum */
         len = 8 + 56;
-
         nleft = len;
         cksum = 0;
         answer = 0;
@@ -151,8 +171,10 @@ sig_alrm(int signo)
         answer = ~cksum;
         icmp->icmp_cksum = answer;
 
+        /* send it */
         if (sendto(g_sockfd, sendbuf, len, 0, g_sendaddr, g_salen) < 0)
                 err(EX_OSERR, "sendto()");
 
+        /* setup another alarm one second from now */
         alarm(1);
 }
